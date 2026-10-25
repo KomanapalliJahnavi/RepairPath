@@ -94,8 +94,10 @@ export interface RepairEvent {
 export interface QuotePartItem {
   id: string;
   name: string;
+  partName?: string;
+  partNumber?: string;
   cost: number;
-  isOem: boolean;
+  isOem?: boolean;
 }
 
 export interface RepairQuote {
