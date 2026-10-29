@@ -58,7 +58,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           </button>
 
           <div className="md:hidden flex items-center">
-            <BrandMark showWordmark={false} size={24} />
+            <BrandMark showWordmark={false} size={30} />
           </div>
 
           <div className="flex flex-col">
