@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   CheckCircle2, 
   ShieldAlert, 
@@ -12,7 +12,13 @@ import {
   BookmarkCheck,
   Flame,
   Zap,
-  Droplets
+  Droplets,
+  Sparkles,
+  Cpu,
+  Wrench,
+  DollarSign,
+  HelpCircle,
+  Key
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { DIAGNOSTIC_KNOWLEDGE_BASE } from '../../data/seedData';
@@ -21,7 +27,9 @@ import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
 import { Input } from '../common/Input';
 import { TechnicianSummaryModal } from './TechnicianSummaryModal';
-import { TroubleshootingCheckItem } from '../../types';
+import { AiApiKeyModal } from './AiApiKeyModal';
+import { TroubleshootingCheckItem, AiDiagnosticResult } from '../../types';
+import { diagnoseWithAi, getStoredGeminiKey } from '../../services/aiDiagnosticService';
 
 export const TroubleshooterWizard: React.FC = () => {
   const { 
@@ -40,13 +48,23 @@ export const TroubleshooterWizard: React.FC = () => {
 
   const selectedAppliance = appliances.find(a => a.id === activeApplianceId);
 
+  // Diagnostic Mode: 'ai_copilot' (default) or 'preset' (traditional decision tree)
+  const [diagnosticMode, setDiagnosticMode] = useState<'ai_copilot' | 'preset'>('ai_copilot');
+
   // User input states
-  const [symptomCategory, setSymptomCategory] = useState<string>('preset');
   const [selectedDiagId, setSelectedDiagId] = useState<string>(DIAGNOSTIC_KNOWLEDGE_BASE[0].id);
-  const [freeTextSymptom, setFreeTextSymptom] = useState<string>('');
-  const [startedWhen, setStartedWhen] = useState<string>('Today');
+  const [symptomInput, setSymptomInput] = useState<string>('');
+  const [startedWhen, setStartedWhen] = useState<string>('Today / Sudden onset');
   const [errorCode, setErrorCode] = useState<string>('');
+  const [sensoryDetails, setSensoryDetails] = useState<string>('');
   const [userNotes, setUserNotes] = useState<string>('');
+
+  // AI Diagnostic States
+  const [aiResult, setAiResult] = useState<AiDiagnosticResult | null>(null);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiLoadingPhase, setAiLoadingPhase] = useState<string>('');
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [hasCustomApiKey, setHasCustomApiKey] = useState(Boolean(getStoredGeminiKey()));
 
   // Critical hazard screening
   const [hazardFlag, setHazardFlag] = useState<'none' | 'smoke_heat' | 'gas' | 'electrical' | 'water_leak'>('none');
@@ -60,7 +78,10 @@ export const TroubleshooterWizard: React.FC = () => {
   // Predefined diagnostic node
   const activeDiagnostic = DIAGNOSTIC_KNOWLEDGE_BASE.find(d => d.id === selectedDiagId) || DIAGNOSTIC_KNOWLEDGE_BASE[0];
 
-  const currentEffectiveSymptom = symptomCategory === 'preset' ? activeDiagnostic.symptomName : (freeTextSymptom || activeDiagnostic.symptomName);
+  // Effective symptom description
+  const currentEffectiveSymptom = diagnosticMode === 'ai_copilot'
+    ? (symptomInput || 'Unspecified operational irregularity')
+    : activeDiagnostic.symptomName;
 
   // Analyze Repair Memory for recurring symptoms
   const memoryAnalysis = useMemo(() => {
@@ -74,6 +95,41 @@ export const TroubleshooterWizard: React.FC = () => {
     );
   }, [activeApplianceId, currentEffectiveSymptom, errorCode, repairEvents, troubleshootingSessions]);
 
+  // Quick suggestions based on appliance category
+  const quickSymptoms = useMemo(() => {
+    if (!selectedAppliance) return [];
+    switch (selectedAppliance.category) {
+      case 'refrigeration':
+        return [
+          { label: 'Fridge compartment warm but freezer is freezing', symptom: 'Fresh food compartment warm (46°F), freezer cold; whistling fan noise', code: '' },
+          { label: 'Ice maker stopped dispensing / frozen solid', symptom: 'Ice room frosted solid; ice cubes clumping together', code: '' },
+          { label: 'Water leaking under crisper drawers', symptom: 'Standing water freezing under bottom crisper pans', code: '' },
+        ];
+      case 'dishwashing':
+        return [
+          { label: 'Error E24 / Standing water in bottom basin', symptom: 'Standing dirty water left in bottom sump after cycle', code: 'E24' },
+          { label: 'Dishes coming out gritty / residue on glasses', symptom: 'Cloudy film and food particulate left on upper rack glasses', code: '' },
+          { label: 'Error E15 / Water leak float triggered', symptom: 'Appliance constantly runs drain pump even when switched off', code: 'E15' },
+        ];
+      case 'laundry':
+        return [
+          { label: 'Violent banging / vibration on spin cycle', symptom: 'Tub slams cabinet walls during high-speed extraction', code: 'UE' },
+          { label: 'Washer will not drain water', symptom: 'Cycle halts with full tub of soapy water; humming sound', code: 'OE' },
+          { label: 'Dryer tumbling but blowing cold air', symptom: 'Dryer drum rotates but clothes remain damp with zero heat', code: '' },
+        ];
+      case 'hvac':
+        return [
+          { label: 'Furnace ignites then shuts off after 4 seconds', symptom: 'Short-cycling: burners light for 4 seconds then extinguish repeatedly', code: '34' },
+          { label: 'Blower fan continuously running cold air', symptom: 'Thermostat set to Heat but supply vents blow room temperature air', code: '33' },
+        ];
+      default:
+        return [
+          { label: 'Appliance powers on but fails to complete cycle', symptom: 'Cycle starts but aborts before completion', code: '' },
+          { label: 'Strange high-pitch whining or clicking noise', symptom: 'Unusual mechanical vibration during operation', code: '' },
+        ];
+    }
+  }, [selectedAppliance]);
+
   const handleSelectAppliance = (id: string) => {
     setActiveApplianceId(id);
     setSelectedApplianceId(id);
@@ -84,6 +140,7 @@ export const TroubleshooterWizard: React.FC = () => {
     if (matching) {
       setSelectedDiagId(matching.id);
     }
+    setAiResult(null);
     setCheckObservations({});
     setSafetyAcknowledged(false);
     setSessionSaved(false);
@@ -105,15 +162,73 @@ export const TroubleshooterWizard: React.FC = () => {
     setSafetyAcknowledged(false);
     setHazardFlag('none');
     setSessionSaved(false);
+    setAiResult(null);
+    setSymptomInput('');
+    setErrorCode('');
+    setSensoryDetails('');
   };
 
+  // Run AI Diagnosis
+  const handleRunAiDiagnosis = async () => {
+    if (!selectedAppliance) return;
+    if (!symptomInput.trim() && !errorCode.trim()) {
+      alert('Please enter a symptom description or an error code first.');
+      return;
+    }
+
+    setIsAiLoading(true);
+    setAiResult(null);
+    setCheckObservations({});
+    setSafetyAcknowledged(false);
+    setSessionSaved(false);
+
+    try {
+      setAiLoadingPhase(`Consulting ${selectedAppliance.brand} ${selectedAppliance.modelNumber || ''} engineering service bulletins...`);
+      await new Promise(r => setTimeout(r, 450));
+      
+      setAiLoadingPhase(`Cross-referencing historical repair memory (${repairEvents.filter(r => r.applianceId === selectedAppliance.id).length} prior records)...`);
+      await new Promise(r => setTimeout(r, 450));
+
+      setAiLoadingPhase('Calculating root cause probabilities & formulating safe test procedures...');
+      
+      const pastRepairs = repairEvents.filter(r => r.applianceId === selectedAppliance.id);
+      const result = await diagnoseWithAi({
+        appliance: selectedAppliance,
+        symptom: symptomInput.trim() || 'Unspecified irregularity',
+        errorCode: errorCode.trim() || undefined,
+        startedWhen,
+        sensoryDetails: sensoryDetails.trim() || undefined,
+        pastRepairs
+      });
+
+      setAiResult(result);
+      if (result.safetyLevel === 'danger_shutoff') {
+        setHazardFlag('electrical');
+      }
+    } catch (err) {
+      console.error('Failed to run AI diagnosis:', err);
+      alert('Failed to complete AI diagnosis. Please check network connection.');
+    } finally {
+      setIsAiLoading(false);
+      setAiLoadingPhase('');
+    }
+  };
+
+  // Active steps list
+  const activeSteps = useMemo(() => {
+    if (diagnosticMode === 'ai_copilot' && aiResult) {
+      return aiResult.diagnosticSteps;
+    }
+    return activeDiagnostic.steps;
+  }, [diagnosticMode, aiResult, activeDiagnostic]);
+
   const completedChecksCount = Object.keys(checkObservations).length;
-  const isAllChecksEvaluated = activeDiagnostic.steps.length > 0 && completedChecksCount === activeDiagnostic.steps.length;
+  const isAllChecksEvaluated = activeSteps.length > 0 && completedChecksCount === activeSteps.length;
 
   const handleSaveSession = () => {
     if (!selectedAppliance) return;
 
-    const checksPayload: TroubleshootingCheckItem[] = activeDiagnostic.steps.map(step => ({
+    const checksPayload: TroubleshootingCheckItem[] = activeSteps.map(step => ({
       id: step.id,
       title: step.title,
       testProcedure: step.testProcedure,
@@ -122,20 +237,30 @@ export const TroubleshooterWizard: React.FC = () => {
       possibleExplanation: checkObservations[step.id] === 'failed' ? step.possibleObservationFailure : undefined,
     }));
 
+    const outcomeSummary = hazardFlag !== 'none'
+      ? 'Emergency safety hazard protocol activated. Equipment disconnected.'
+      : aiResult 
+      ? aiResult.summary 
+      : activeDiagnostic.verdictRule.summary;
+
+    const suggestedNextAction = hazardFlag !== 'none' 
+      ? 'emergency_shutoff' 
+      : aiResult 
+      ? aiResult.recommendation 
+      : activeDiagnostic.verdictRule.suggestedNextAction;
+
     addTroubleshootingSession({
       applianceId: selectedAppliance.id,
       reportedSymptom: currentEffectiveSymptom,
-      symptomCategory: symptomCategory === 'preset' ? activeDiagnostic.symptomName : 'Custom Description',
+      symptomCategory: diagnosticMode === 'ai_copilot' ? 'AI Diagnostic Copilot' : activeDiagnostic.symptomName,
       startedWhen,
       errorCode: errorCode.trim() || undefined,
       userNotes: userNotes.trim() || undefined,
       hazardDetected: hazardFlag !== 'none',
       hazardType: hazardFlag,
       checksPerformed: checksPayload,
-      outcomeSummary: hazardFlag !== 'none'
-        ? 'Emergency safety hazard protocol activated. Normal preliminary troubleshooting stopped.'
-        : activeDiagnostic.verdictRule.summary,
-      suggestedNextAction: hazardFlag !== 'none' ? 'emergency_shutoff' : activeDiagnostic.verdictRule.suggestedNextAction,
+      outcomeSummary,
+      suggestedNextAction,
       status: 'completed',
     });
 
@@ -144,15 +269,83 @@ export const TroubleshooterWizard: React.FC = () => {
 
   return (
     <div className="space-y-6 text-left">
-      {/* Step 1: Symptom Reporting Panel */}
+      {/* Top Banner / Mode Switcher */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-white rounded-lg border border-[#DADBD3] shadow-xs">
+        <div className="flex items-center gap-2">
+          <div className="p-2 rounded-lg bg-[#285B45]/10 text-[#285B45]">
+            <Cpu className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-sm sm:text-base font-bold text-[#252923]">
+              Diagnostic Copilot & Troubleshooting
+            </h2>
+            <p className="text-[11px] text-[#73766F]">
+              Determine failure root causes, perform safe physical tests, and prevent costly misdiagnoses.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Mode Pill Toggle */}
+          <div className="inline-flex rounded-md p-0.5 bg-[#FAF9F5] border border-[#DADBD3] text-xs">
+            <button
+              type="button"
+              onClick={() => setDiagnosticMode('ai_copilot')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition-all cursor-pointer ${
+                diagnosticMode === 'ai_copilot'
+                  ? 'bg-[#285B45] text-white shadow-xs font-semibold'
+                  : 'text-[#4A4F44] hover:text-[#252923]'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>AI Copilot</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDiagnosticMode('preset')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition-all cursor-pointer ${
+                diagnosticMode === 'preset'
+                  ? 'bg-[#285B45] text-white shadow-xs font-semibold'
+                  : 'text-[#4A4F44] hover:text-[#252923]'
+              }`}
+            >
+              <ClipboardList className="w-3.5 h-3.5" />
+              <span>Pre-set Trees</span>
+            </button>
+          </div>
+
+          {/* Engine Settings button */}
+          <button
+            type="button"
+            onClick={() => setIsApiKeyModalOpen(true)}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded text-xs font-medium border border-[#DADBD3] bg-[#FAF9F5] hover:bg-[#EAE9E2] text-[#4A4F44] transition-colors cursor-pointer"
+            title="Configure Gemini API Key"
+          >
+            <Key className="w-3.5 h-3.5 text-[#285B45]" />
+            <span className="hidden sm:inline">{hasCustomApiKey ? 'Gemini Live' : 'AI Settings'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Step 1: Symptom Reporting & AI Analysis Intake */}
       <div className="p-5 sm:p-6 bg-white rounded-lg border border-[#DADBD3] space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#F5F4EF]">
           <div>
-            <h2 className="text-base font-bold text-[#252923]">
-              Symptom Reporting & Observation Intake
-            </h2>
+            <h3 className="text-sm sm:text-base font-bold text-[#252923] flex items-center gap-2">
+              {diagnosticMode === 'ai_copilot' ? (
+                <>
+                  <Sparkles className="w-4 h-4 text-[#285B45]" />
+                  <span>AI Symptom Intake & Reasoning Engine</span>
+                </>
+              ) : (
+                <>
+                  <ClipboardList className="w-4 h-4 text-[#285B45]" />
+                  <span>Category Decision Tree Intake</span>
+                </>
+              )}
+            </h3>
             <p className="text-xs text-[#73766F] mt-0.5">
-              Select the affected unit and specify symptoms to establish safe preliminary checks.
+              Select your appliance and describe observed anomalies for root-cause deduction.
             </p>
           </div>
           <Button
@@ -165,6 +358,7 @@ export const TroubleshooterWizard: React.FC = () => {
           </Button>
         </div>
 
+        {/* Appliance & Timeframe Selectors */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="flex flex-col gap-1.5">
             <label htmlFor="troubleshoot-appliance" className="text-xs font-semibold text-[#252923]">
@@ -178,24 +372,9 @@ export const TroubleshooterWizard: React.FC = () => {
             >
               {appliances.map(app => (
                 <option key={app.id} value={app.id}>
-                  {app.name} ({app.brand} {app.modelNumber})
+                  {app.name} ({app.brand} {app.modelNumber || 'Chassis'})
                 </option>
               ))}
-            </select>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="troubleshoot-symptom-type" className="text-xs font-semibold text-[#252923]">
-              Symptom Intake Mode
-            </label>
-            <select
-              id="troubleshoot-symptom-type"
-              value={symptomCategory}
-              onChange={e => setSymptomCategory(e.target.value)}
-              className="px-3 py-2 text-xs sm:text-sm text-[#252923] bg-[#FAF9F5] border border-[#DADBD3] rounded-md focus:border-[#285B45] outline-none cursor-pointer"
-            >
-              <option value="preset">Predefined Known Symptom Tree</option>
-              <option value="custom">Free-Text Description</option>
             </select>
           </div>
 
@@ -209,63 +388,154 @@ export const TroubleshooterWizard: React.FC = () => {
               onChange={e => setStartedWhen(e.target.value)}
               className="px-3 py-2 text-xs sm:text-sm text-[#252923] bg-[#FAF9F5] border border-[#DADBD3] rounded-md focus:border-[#285B45] outline-none cursor-pointer"
             >
-              <option value="Today">Today / Sudden onset</option>
+              <option value="Today / Sudden onset">Today / Sudden onset</option>
               <option value="2-3 days ago">2-3 days ago</option>
               <option value="Within the past week">Within the past week</option>
-              <option value="Over a month (gradual)">Over a month (gradual degradation)</option>
+              <option value="Over a month (gradual degradation)">Over a month (gradual degradation)</option>
             </select>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-[#252923]">
+              Appliance Context Profile
+            </label>
+            <div className="px-3 py-2 text-xs bg-[#FAF9F5] border border-[#DADBD3] rounded-md text-[#4A4F44] flex items-center justify-between">
+              <span>{selectedAppliance?.category.toUpperCase()}</span>
+              <span className="font-mono text-[11px] font-semibold text-[#285B45]">
+                {selectedAppliance?.conditionStatus.replace('_', ' ').toUpperCase()}
+              </span>
+            </div>
           </div>
         </div>
 
-        {symptomCategory === 'preset' ? (
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="troubleshoot-predefined" className="text-xs font-semibold text-[#252923]">
-              Predefined Symptom Category
-            </label>
-            <select
-              id="troubleshoot-predefined"
-              value={selectedDiagId}
-              onChange={e => handleSelectDiagnostic(e.target.value)}
-              className="w-full px-3 py-2 text-xs sm:text-sm text-[#252923] bg-[#FAF9F5] border border-[#DADBD3] rounded-md focus:border-[#285B45] outline-none cursor-pointer"
-            >
-              {DIAGNOSTIC_KNOWLEDGE_BASE.map(diag => (
-                <option key={diag.id} value={diag.id}>
-                  [{diag.category.toUpperCase()}] {diag.symptomName}
-                </option>
-              ))}
-            </select>
+        {/* AI Copilot Mode Fields */}
+        {diagnosticMode === 'ai_copilot' ? (
+          <div className="space-y-4 pt-1">
+            {/* Quick Suggestions Chips */}
+            {quickSymptoms.length > 0 && (
+              <div className="space-y-1.5">
+                <span className="text-[11px] font-bold text-[#73766F] uppercase tracking-wider flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-[#285B45]" />
+                  Common Patterns for {selectedAppliance?.brand} {selectedAppliance?.category}:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {quickSymptoms.map((qs, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => {
+                        setSymptomInput(qs.symptom);
+                        if (qs.code) setErrorCode(qs.code);
+                      }}
+                      className="px-2.5 py-1 text-xs rounded-full bg-[#FAF9F5] hover:bg-[#EAE9E2] border border-[#DADBD3] text-[#252923] transition-colors cursor-pointer text-left"
+                    >
+                      {qs.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="ai-symptom" className="text-xs font-semibold text-[#252923] flex items-center justify-between">
+                <span>Observed Problem / Unusual Behavior</span>
+                <span className="text-[11px] font-normal text-[#73766F]">Describe what the machine is or isn't doing</span>
+              </label>
+              <textarea
+                id="ai-symptom"
+                rows={2}
+                value={symptomInput}
+                onChange={e => setSymptomInput(e.target.value)}
+                placeholder="e.g. Fresh food compartment reached 46°F while freezer is working; high-pitched whistling noise when doors close..."
+                className="w-full px-3 py-2 text-xs sm:text-sm bg-white border border-[#DADBD3] rounded-md focus:border-[#285B45] outline-none text-[#252923]"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Input
+                label="Error Code on Digital Display (if any)"
+                placeholder="e.g. E24, 4C, F03E01, 34, CL"
+                value={errorCode}
+                onChange={e => setErrorCode(e.target.value)}
+                hint="Check LCD display, LED blink cadence, or beeps"
+              />
+              <Input
+                label="Sensory Details / Sounds / Odors"
+                placeholder="e.g. Clicking noise, water under unit, vibrating drum"
+                value={sensoryDetails}
+                onChange={e => setSensoryDetails(e.target.value)}
+                hint="Auditory and physical indicators"
+              />
+            </div>
+
+            {/* AI Action Button */}
+            <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <p className="text-[11px] text-[#73766F]">
+                The AI incorporates your appliance&apos;s brand, model bulletin history, and past repair memory to deduce root causes.
+              </p>
+
+              <button
+                type="button"
+                onClick={handleRunAiDiagnosis}
+                disabled={isAiLoading || (!symptomInput.trim() && !errorCode.trim())}
+                className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-md bg-[#285B45] hover:bg-[#1E4635] disabled:bg-[#DADBD3] disabled:text-[#73766F] text-white text-xs sm:text-sm font-semibold tracking-wide transition-all shadow-xs cursor-pointer focus-visible:ring-2 focus-visible:ring-[#285B45]"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>{isAiLoading ? 'Analyzing Model & History...' : 'Diagnose with AI Copilot'}</span>
+              </button>
+            </div>
+
+            {/* AI Analyzing Loading State */}
+            {isAiLoading && (
+              <div className="p-4 rounded-lg bg-[#FAF9F5] border border-[#BDD4C8] space-y-2 animate-pulse">
+                <div className="flex items-center gap-2 text-xs font-semibold text-[#285B45]">
+                  <Cpu className="w-4 h-4 animate-spin" />
+                  <span>{aiLoadingPhase || 'Consulting Engineering Knowledge Base...'}</span>
+                </div>
+                <div className="w-full bg-[#EAE9E2] h-1.5 rounded-full overflow-hidden">
+                  <div className="bg-[#285B45] h-full w-2/3 rounded-full animate-progress" />
+                </div>
+              </div>
+            )}
           </div>
         ) : (
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="troubleshoot-freetext" className="text-xs font-semibold text-[#252923]">
-              Describe the problem in your own words
-            </label>
-            <textarea
-              id="troubleshoot-freetext"
-              rows={2}
-              placeholder="e.g. Ice compartment freezing solid; water leaking under kickplate..."
-              value={freeTextSymptom}
-              onChange={e => setFreeTextSymptom(e.target.value)}
-              className="w-full px-3 py-2 text-xs sm:text-sm bg-white border border-[#DADBD3] rounded-md focus:border-[#285B45] outline-none"
-            />
+          /* Preset Decision Tree Mode */
+          <div className="space-y-4 pt-1">
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="troubleshoot-predefined" className="text-xs font-semibold text-[#252923]">
+                Predefined Symptom Category
+              </label>
+              <select
+                id="troubleshoot-predefined"
+                value={selectedDiagId}
+                onChange={e => handleSelectDiagnostic(e.target.value)}
+                className="w-full px-3 py-2 text-xs sm:text-sm text-[#252923] bg-[#FAF9F5] border border-[#DADBD3] rounded-md focus:border-[#285B45] outline-none cursor-pointer"
+              >
+                {DIAGNOSTIC_KNOWLEDGE_BASE.map(diag => (
+                  <option key={diag.id} value={diag.id}>
+                    [{diag.category.toUpperCase()}] {diag.symptomName}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Input
+                label="Warning Indicator / Error Code"
+                placeholder="e.g. E24, Error 34, Blink code 3"
+                value={errorCode}
+                onChange={e => setErrorCode(e.target.value)}
+                hint="Look for code on digital display or blink LED"
+              />
+              <Input
+                label="Additional Operating Context"
+                placeholder="e.g. Occurred after heavy rain; started after cleaning"
+                value={userNotes}
+                onChange={e => setUserNotes(e.target.value)}
+              />
+            </div>
           </div>
         )}
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
-          <Input
-            label="Warning Indicator / Error Code"
-            placeholder="e.g. E24, Error 34, Blink code 3"
-            value={errorCode}
-            onChange={e => setErrorCode(e.target.value)}
-            hint="Look for code on digital display or blink LED"
-          />
-          <Input
-            label="Additional Operating Context"
-            placeholder="e.g. High kitchen humidity; occurred after cleaning"
-            value={userNotes}
-            onChange={e => setUserNotes(e.target.value)}
-          />
-        </div>
       </div>
 
       {/* Immediate Hazard Screening */}
@@ -320,7 +590,7 @@ export const TroubleshooterWizard: React.FC = () => {
             }`}
           >
             <Droplets className="w-4 h-4 shrink-0" />
-            <span>Active Pressurized Water Leak</span>
+            <span>Active Water Flood</span>
           </button>
         </div>
 
@@ -338,17 +608,17 @@ export const TroubleshooterWizard: React.FC = () => {
             )}
             {hazardFlag === 'smoke_heat' && (
               <p className="text-[#7F1D1D] leading-relaxed">
-                <strong>ELECTRICAL/FIRE HAZARD:</strong> Stop using the appliance immediately. If safe to reach without touching hot surfaces, switch off the appliance&apos;s dedicated circuit breaker at the main breaker panel. Do not open internal chassis covers.
+                <strong>ELECTRICAL/FIRE HAZARD:</strong> Stop using the appliance immediately. Switch off the dedicated circuit breaker at the main electrical panel.
               </p>
             )}
             {hazardFlag === 'electrical' && (
               <p className="text-[#7F1D1D] leading-relaxed">
-                <strong>SHOCK HAZARD:</strong> Do not touch the appliance frame or any standing puddles near it. Immediately trip the breaker at the electrical service panel. Contact a certified professional technician.
+                <strong>SHOCK HAZARD:</strong> Do not touch the appliance frame or standing puddles near it. Immediately trip the breaker at the electrical service panel.
               </p>
             )}
             {hazardFlag === 'water_leak' && (
               <p className="text-[#92400E] leading-relaxed">
-                <strong>WATER DAMAGE HAZARD:</strong> Immediately locate and close the appliance isolation shut-off valve behind the unit or under the sink, or shut the home&apos;s main water supply.
+                <strong>WATER DAMAGE HAZARD:</strong> Immediately locate and close the appliance isolation shut-off valve behind the unit or shut the main household water supply.
               </p>
             )}
           </div>
@@ -380,29 +650,102 @@ export const TroubleshooterWizard: React.FC = () => {
               &quot;This symptom was recorded {memoryAnalysis.matchCount} times previously. Review the related repair history and consider asking your technician whether the underlying root cause has been resolved.&quot;
             </p>
           </div>
+        </div>
+      )}
 
-          <div className="flex flex-wrap items-center gap-3 pt-1">
-            <button
-              type="button"
-              onClick={() => setActiveTab('repair-memory')}
-              className="text-xs font-semibold text-[#B91C1C] hover:underline flex items-center gap-1"
-            >
-              <span>View Related History in Repair Memory</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsTechPacketOpen(true)}
-              className="text-xs font-semibold text-[#285B45] hover:underline flex items-center gap-1"
-            >
-              <FileText className="w-3.5 h-3.5" />
-              <span>Review Pre-Visit Technician Packet</span>
-            </button>
+      {/* AI DEDUCTION RESULTS (Probable Root Causes & Explanations) */}
+      {aiResult && hazardFlag === 'none' && (
+        <div className="p-5 sm:p-6 bg-white rounded-lg border border-[#BDD4C8] shadow-xs space-y-5 animate-in fade-in duration-200">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#F5F4EF]">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-lg bg-[#285B45] text-white">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#252923]">
+                  AI Diagnostic Analysis & Probability Breakdown
+                </h3>
+                <p className="text-xs text-[#73766F]">
+                  Deductions for {selectedAppliance?.brand} {selectedAppliance?.modelNumber || selectedAppliance?.name}
+                </p>
+              </div>
+            </div>
+
+            <span className="text-[11px] font-mono px-2.5 py-1 rounded bg-[#FAF9F5] border border-[#DADBD3] text-[#4A4F44]">
+              Source: {aiResult.source === 'gemini_ai' ? 'Gemini AI Live Engine' : 'Smart Diagnostic Engine'}
+            </span>
+          </div>
+
+          {/* Engineering Summary */}
+          <div className="p-4 rounded-lg bg-[#FAF9F5] border border-[#DADBD3] text-xs sm:text-sm text-[#252923] leading-relaxed">
+            <strong>Diagnosis Summary: </strong>
+            <span>{aiResult.summary}</span>
+          </div>
+
+          {/* Probable Root Causes */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-[#73766F] flex items-center gap-1.5">
+              <Wrench className="w-4 h-4 text-[#285B45]" />
+              Ranked Probable Root Causes
+            </h4>
+
+            <div className="grid grid-cols-1 gap-3">
+              {aiResult.rootCauses.map((rc, idx) => (
+                <div 
+                  key={idx}
+                  className="p-4 rounded-lg border border-[#DADBD3] bg-[#FAF9F5]/60 hover:bg-[#FAF9F5] transition-colors space-y-2.5 text-xs"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-sm text-[#252923]">
+                        {rc.cause}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${
+                        rc.diyDifficulty === 'Easy DIY' 
+                          ? 'bg-[#EBF7EE] text-[#1E7E34] border border-[#C3E6CB]'
+                          : rc.diyDifficulty === 'Moderate DIY'
+                          ? 'bg-[#FEF7EA] text-[#B45309] border border-[#F7DBA7]'
+                          : 'bg-[#FDF2F2] text-[#B91C1C] border border-[#F8C8C8]'
+                      }`}>
+                        {rc.diyDifficulty}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-mono text-xs font-bold text-[#285B45]">
+                        {rc.probability}% Likelihood
+                      </span>
+                      <div className="w-24 bg-[#DADBD3] h-2 rounded-full overflow-hidden">
+                        <div 
+                          className="bg-[#285B45] h-full rounded-full" 
+                          style={{ width: `${rc.probability}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-[#4A4F44] leading-relaxed">
+                    {rc.explanation}
+                  </p>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-[#DADBD3]/60 text-[11px] text-[#73766F]">
+                    <div>
+                      <strong>Likely Components: </strong>
+                      <span>{rc.commonParts.join(', ') || 'N/A'}</span>
+                    </div>
+                    <div className="font-mono font-medium text-[#252923] flex items-center gap-1">
+                      <DollarSign className="w-3 h-3 text-[#285B45]" />
+                      <span>Estimated Range: ${rc.estimatedCostRange.min} – ${rc.estimatedCostRange.max}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Standard Safety Protocol Checkbox */}
+      {/* Safety Protocol Checkbox */}
       {hazardFlag === 'none' && (
         <div className="p-4 rounded-lg bg-[#FAF9F5] border border-[#DADBD3] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-start gap-2.5">
@@ -412,7 +755,7 @@ export const TroubleshooterWizard: React.FC = () => {
                 Standard Inspection Safety Protocol
               </strong>
               <p className="text-xs text-[#73766F]">
-                {activeDiagnostic.safetyCheck}
+                {aiResult?.safetyInstructions || activeDiagnostic.safetyCheck}
               </p>
             </div>
           </div>
@@ -421,7 +764,7 @@ export const TroubleshooterWizard: React.FC = () => {
               type="checkbox"
               checked={safetyAcknowledged}
               onChange={e => setSafetyAcknowledged(e.target.checked)}
-              className="w-4 h-4 text-[#285B45] rounded"
+              className="w-4 h-4 text-[#285B45] rounded cursor-pointer"
             />
             <span>Power Safe / Ready</span>
           </label>
@@ -429,74 +772,78 @@ export const TroubleshooterWizard: React.FC = () => {
       )}
 
       {/* Sequential Preliminary Checks */}
-      {hazardFlag === 'none' && (
+      {hazardFlag === 'none' && activeSteps.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <ClipboardList className="w-4 h-4 text-[#285B45]" />
               <h3 className="text-sm font-bold text-[#252923]">
-                Sequential Preliminary Checks ({completedChecksCount} of {activeDiagnostic.steps.length} evaluated)
+                Physical Verification Checks ({completedChecksCount} of {activeSteps.length} evaluated)
               </h3>
             </div>
             <span className="text-xs text-[#73766F] font-mono">
-              Transparent predefined verification logic
+              {diagnosticMode === 'ai_copilot' ? 'Tailored AI non-destructive tests' : 'Predefined verification logic'}
             </span>
           </div>
 
           <div className="space-y-3">
-            {activeDiagnostic.steps.map((step, idx) => {
+            {activeSteps.map((step, idx) => {
               const currentObservation = checkObservations[step.id];
 
               return (
                 <div
                   key={step.id}
-                  className={`p-4 sm:p-5 rounded-lg border transition-all text-left ${
+                  className={`p-4 sm:p-5 rounded-lg border transition-all ${
                     currentObservation === 'passed'
-                      ? 'border-[#BDD4C8] bg-[#FAF9F5]'
+                      ? 'bg-[#FAFDF9] border-[#A3D9A5]'
                       : currentObservation === 'failed'
-                      ? 'border-[#F8C8C8] bg-white'
-                      : 'border-[#DADBD3] bg-white'
-                  } ${!safetyAcknowledged ? 'opacity-60 pointer-events-none' : ''}`}
+                      ? 'bg-[#FFF9F9] border-[#F8C8C8]'
+                      : currentObservation === 'skipped'
+                      ? 'bg-[#FAF9F5] border-[#DADBD3] opacity-75'
+                      : 'bg-white border-[#DADBD3]'
+                  }`}
                 >
-                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                    <div className="flex-1 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                    <div className="space-y-2 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="w-5 h-5 rounded-full bg-[#EAE9E2] text-[#252923] text-xs font-mono font-bold flex items-center justify-center shrink-0">
+                        <span className="w-5 h-5 rounded-full bg-[#EAE9E2] text-[#252923] text-xs font-bold flex items-center justify-center shrink-0">
                           {idx + 1}
                         </span>
-                        <h4 className="text-sm font-bold text-[#252923]">
+                        <h4 className="text-xs sm:text-sm font-bold text-[#252923]">
                           {step.title}
                         </h4>
                       </div>
 
-                      <div className="ml-7 space-y-1.5 text-xs">
-                        <p className="text-[#4A4F44]">{step.description}</p>
+                      <p className="text-xs text-[#4A4F44] pl-7">
+                        {step.description}
+                      </p>
 
-                        <div className="p-3 bg-[#FAF9F5] rounded border border-[#DADBD3] space-y-1.5">
+                      <div className="pl-7 space-y-1.5 text-xs">
+                        <div className="p-2.5 rounded bg-[#FAF9F5] border border-[#DADBD3] space-y-1">
+                          <strong className="text-[#252923] block">Test Procedure:</strong>
+                          <p className="text-[#4A4F44]">{step.testProcedure}</p>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] pt-1">
                           <div>
-                            <strong className="text-[#252923]">Procedure: </strong>
-                            <span className="text-[#4A4F44]">{step.testProcedure}</span>
-                          </div>
-                          <div>
-                            <strong className="text-[#285B45]">Intended to Establish: </strong>
-                            <span className="text-[#4A4F44]">{step.intent}</span>
-                          </div>
-                          <div>
-                            <strong className="text-[#73766F]">Normal Pass Condition: </strong>
+                            <strong className="text-[#285B45]">Expected Pass: </strong>
                             <span className="text-[#4A4F44]">{step.passCondition}</span>
+                          </div>
+                          <div>
+                            <strong className="text-[#B91C1C]">Failure Indicator: </strong>
+                            <span className="text-[#4A4F44]">{step.possibleObservationFailure}</span>
                           </div>
                         </div>
 
-                        {currentObservation === 'failed' && (
-                          <div className="p-2.5 rounded bg-[#FDF2F2] border border-[#F8C8C8] text-[#7F1D1D]">
-                            <strong>Possible Observation Explanation: </strong>
-                            <span>{step.possibleObservationFailure}</span>
-                          </div>
+                        {step.warningNote && (
+                          <p className="text-[11px] text-[#B45309] bg-[#FEF7EA] p-1.5 rounded border border-[#F7DBA7]">
+                            <strong>Precaution: </strong>{step.warningNote}
+                          </p>
                         )}
                       </div>
                     </div>
 
-                    {/* Step Action Buttons */}
+                    {/* Action buttons */}
                     <div className="flex sm:flex-col gap-2 shrink-0 ml-7 sm:ml-0">
                       <button
                         type="button"
@@ -541,7 +888,7 @@ export const TroubleshooterWizard: React.FC = () => {
       )}
 
       {/* Outcome Synthesis & Session Actions */}
-      {(isAllChecksEvaluated || hazardFlag !== 'none') && (
+      {(isAllChecksEvaluated || hazardFlag !== 'none' || aiResult) && (
         <div className="p-5 sm:p-6 rounded-lg border border-[#BDD4C8] bg-white space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#DADBD3]">
             <div>
@@ -552,7 +899,7 @@ export const TroubleshooterWizard: React.FC = () => {
                 </h3>
               </div>
               <p className="text-xs text-[#73766F] mt-0.5">
-                Preliminary evaluation for {selectedAppliance?.name || 'appliance'}
+                Evaluation for {selectedAppliance?.name || 'appliance'}
               </p>
             </div>
 
@@ -560,14 +907,14 @@ export const TroubleshooterWizard: React.FC = () => {
               variant={
                 hazardFlag !== 'none'
                   ? 'urgent'
-                  : activeDiagnostic.verdictRule.diyRecommended
+                  : aiResult?.recommendation === 'safe_diy_maintenance' || activeDiagnostic.verdictRule.diyRecommended
                   ? 'optimal'
                   : 'attention'
               }
             >
               {hazardFlag !== 'none'
                 ? 'Emergency Action Required'
-                : activeDiagnostic.verdictRule.diyRecommended
+                : (aiResult?.recommendation === 'safe_diy_maintenance' || activeDiagnostic.verdictRule.diyRecommended)
                 ? 'Safe DIY Clearing Feasible'
                 : 'Qualified Technician Service Advised'}
             </Badge>
@@ -578,7 +925,7 @@ export const TroubleshooterWizard: React.FC = () => {
               <strong>Observation Summary: </strong>
               {hazardFlag !== 'none'
                 ? 'Emergency hazard detected. Equipment disconnected from active service.'
-                : activeDiagnostic.verdictRule.summary}
+                : aiResult?.summary || activeDiagnostic.verdictRule.summary}
             </p>
             <p className="text-[11px] text-[#73766F] italic">
               Notice: This is a safe preliminary checklist and observation record, not a certified structural diagnosis.
@@ -632,9 +979,16 @@ export const TroubleshooterWizard: React.FC = () => {
           startedWhen={startedWhen}
           relatedRepairs={memoryAnalysis?.matchedRepairs || []}
           recurringExplanation={memoryAnalysis?.isRecurring ? memoryAnalysis.explanation : undefined}
-          suggestedQuestions={memoryAnalysis?.suggestedQuestions || []}
+          suggestedQuestions={aiResult?.technicianBriefNotes || memoryAnalysis?.suggestedQuestions || []}
         />
       )}
+
+      {/* AI API Key Modal */}
+      <AiApiKeyModal
+        isOpen={isApiKeyModalOpen}
+        onClose={() => setIsApiKeyModalOpen(false)}
+        onKeyChanged={() => setHasCustomApiKey(Boolean(getStoredGeminiKey()))}
+      />
     </div>
   );
 };

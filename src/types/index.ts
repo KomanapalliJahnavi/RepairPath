@@ -184,3 +184,34 @@ export type ActiveTab =
   | 'repair-memory' 
   | 'quotesense' 
   | 'repair-vs-replace';
+
+export interface AiDiagnosticRootCause {
+  cause: string;
+  probability: number; // 0 to 100 percentage
+  explanation: string;
+  commonParts: string[];
+  estimatedCostRange: { min: number; max: number };
+  diyDifficulty: 'Easy DIY' | 'Moderate DIY' | 'Professional Only';
+}
+
+export interface AiDiagnosticStep {
+  id: string;
+  title: string;
+  description: string;
+  testProcedure: string;
+  intent: string;
+  passCondition: string;
+  possibleObservationFailure: string;
+  warningNote?: string;
+}
+
+export interface AiDiagnosticResult {
+  summary: string;
+  safetyLevel: 'safe' | 'caution' | 'danger_shutoff';
+  safetyInstructions?: string;
+  rootCauses: AiDiagnosticRootCause[];
+  diagnosticSteps: AiDiagnosticStep[];
+  recommendation: 'safe_diy_maintenance' | 'call_technician' | 'emergency_shutoff' | 'monitor';
+  technicianBriefNotes: string[];
+  source: 'gemini_ai' | 'smart_knowledge_engine';
+}
