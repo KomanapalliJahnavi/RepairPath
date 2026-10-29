@@ -4,7 +4,11 @@ const STORAGE_KEY_GEMINI_KEY = 'repairpath_gemini_api_key';
 
 export const getStoredGeminiKey = (): string => {
   try {
-    return localStorage.getItem(STORAGE_KEY_GEMINI_KEY) || '';
+    const userKey = localStorage.getItem(STORAGE_KEY_GEMINI_KEY);
+    if (userKey && userKey.trim()) return userKey.trim();
+    const envKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (envKey && typeof envKey === 'string' && envKey.trim()) return envKey.trim();
+    return '';
   } catch {
     return '';
   }
